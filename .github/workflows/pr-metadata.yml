@@ -1,0 +1,45 @@
+name: PR Metadata
+
+on:
+    pull_request:
+        types: [opened, edited, reopened, synchronize, ready_for_review]
+    pull_request_target:
+        types: [opened, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+    group: pr-metadata-${{ github.event_name }}-${{ github.event.pull_request.number }}
+    cancel-in-progress: true
+
+jobs:
+    title:
+        name: PR Title
+        if: github.event_name == 'pull_request'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 3
+        steps:
+            - name: Validate the Conventional Commit title
+              env:
+                  PR_TITLE: ${{ github.event.pull_request.title }}
+              shell: bash
+              run: |
+                  conventional='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9][a-z0-9./_-]*\))?!?: .+$'
+                  if [[ ! "$PR_TITLE" =~ $conventional ]]; then
+                      printf '%s\n' '::error::Use a Conventional Commit title such as chore: update CI.'
+                      exit 1
+                  fi
+
+    labels:
+        name: PR Labels
+        if: github.event_name == 'pull_request_target' && github.repository == 'RentnerProxy/app-template'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 3
+        permissions:
+            contents: read
+            pull-requests: write
+        steps:
+            - name: Label changed areas using the base configuration
+              uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+              with:
+                  sync-labels: false
