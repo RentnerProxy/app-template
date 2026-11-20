@@ -1,0 +1,84 @@
+{
+    "openapi": "3.1.0",
+    "info": { "title": "Greeting", "version": "1.0.0" },
+    "security": [{ "AppCredential": [] }],
+    "x-rentnerproxy-ui": {
+        "routes": ["overview", "details"],
+        "dialogs": ["confirm-save"],
+        "events": []
+    },
+    "paths": {
+        "/app/v1/api/get-greeting": {
+            "post": {
+                "operationId": "get-greeting",
+                "x-rentnerproxy-access": { "permissionKey": "greeting-read" },
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": { "type": "object", "additionalProperties": false }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The saved greeting.",
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/Greeting" }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/app/v1/api/save-greeting": {
+            "post": {
+                "operationId": "save-greeting",
+                "x-rentnerproxy-access": { "permissionKey": "greeting-write" },
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": { "$ref": "#/components/schemas/Greeting" }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The new greeting.",
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/Greeting" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "securitySchemes": {
+            "AppCredential": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "Platform-issued credential scoped to the app installation and generation."
+            }
+        },
+        "schemas": {
+            "Greeting": {
+                "type": "object",
+                "required": ["greeting"],
+                "properties": {
+                    "greeting": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120,
+                        "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f](?:[^\\x00-\\x1f\\x7f-\\x9f]*[^\\s\\x00-\\x1f\\x7f-\\x9f])?$"
+                    }
+                },
+                "additionalProperties": false
+            }
+        }
+    }
+}

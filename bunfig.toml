@@ -1,0 +1,10 @@
+[install]
+exact = true
+linker = "isolated"
+
+[fmt]
+printWidth = 100
+semi = false
+singleQuote = true
+tabWidth = 4
+ignorePatterns = ["**/.env*", "**/node_modules/**", "**/dist/**", "**/.app-dev/**"]
