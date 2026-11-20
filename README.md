@@ -14,7 +14,7 @@ bun run test
 bun run build
 ```
 
-Open the loopback URL printed by `bun run dev`. The local Platform stub starts the real backend with synthetic installation data and hosts the UI in an isolated iframe. The stub can switch theme and language, open the details route, and replace the iframe. The greeting survives a restart in `.app-dev/data`.
+Open the loopback URL printed by `bun run dev`. The local Platform stub starts the real backend with synthetic installation data and hosts the UI in an isolated iframe. Use the controls to switch theme, language or route, simulate readiness changes, or replace the iframe. The greeting survives a restart in `.app-dev/data`.
 
 `bun run build` writes a `.tar.zst` development archive under `dist/` with a synthetic source identity. GitHub CI builds the same package on both Linux architectures and attaches development archives with the tested repository ID and commit.
 

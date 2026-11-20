@@ -19,8 +19,8 @@ export function readGreeting(value: unknown): string | undefined {
     if (
         typeof greeting === 'string' &&
         greeting === greeting.trim() &&
-        greeting.length > 0 &&
-        greeting.length <= maxGreetingLength &&
+        greeting !== '' &&
+        [...greeting].length <= maxGreetingLength &&
         !/[\p{Cc}\p{Cs}]/u.test(greeting)
     ) {
         return greeting

@@ -47,6 +47,7 @@ function hostDocument(installationId: string, generation: number) {
     <label>Theme <select id="theme"><option value="light">Light</option><option value="dark">Dark</option></select></label>
     <label>Language <select id="locale"><option value="en">English</option><option value="de">Deutsch</option></select></label>
     <label>Route <select id="route"><option value="overview">Overview</option><option value="details">Details</option></select></label>
+    <label><input id="app-ready" type="checkbox" checked> App ready</label>
     <button id="replace-frame" type="button">Replace app</button>
     <div id="frame-slot"></div>
     <dialog aria-label="Confirm greeting">

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 
-import { chromium, expect } from '@playwright/test'
+import { chromium, expect, type Request } from '@playwright/test'
 
 import { startDevHost } from '../../../scripts/dev/host.ts'
 import { defaultGreeting } from '../../../src/lib/greeting.ts'
@@ -11,6 +11,13 @@ import { defaultGreeting } from '../../../src/lib/greeting.ts'
 const [packageDirectory] = Bun.argv.slice(2)
 if (!packageDirectory || !isAbsolute(packageDirectory)) {
     throw new Error('Expected the absolute extracted package directory')
+}
+
+function isGreetingRead(request: Request) {
+    return (
+        new URL(request.url()).pathname === '/dev/v1/greeting' &&
+        request.postData()?.includes('"operationId":"get-greeting"') === true
+    )
 }
 
 const dataDirectory = await mkdtemp(join(tmpdir(), 'greeting-browser-'))
@@ -59,15 +66,47 @@ try {
             const input = frame.getByRole('textbox', { name: 'Neuer Gruß' })
             const save = frame.getByRole('button', { name: 'Gruß speichern' })
             const greeting = 'Gude vom installierten Paket!'
+            const unicodeLimit = '🙂'.repeat(120)
+            await input.fill(unicodeLimit)
+            await expect(input).toHaveValue(unicodeLimit)
             await input.fill(greeting)
             await save.click()
             await page.getByRole('button', { name: 'Cancel' }).click()
             await expect(save).toBeEnabled()
             await expect(frame.getByText(defaultGreeting, { exact: true })).toBeVisible()
-            await input.press('Enter')
-            await page.getByRole('button', { name: 'Confirm' }).click()
-            await expect(frame.getByText(greeting, { exact: true })).toBeVisible()
-            await expect(frame.getByText('Gruß gespeichert', { exact: true })).toBeVisible()
+
+            const releaseRead = Promise.withResolvers<void>()
+            let holdRead = true
+            await page.route('**/dev/v1/greeting', async (route) => {
+                if (!holdRead || !isGreetingRead(route.request())) return route.fallback()
+                holdRead = false
+                await releaseRead.promise
+                await route.fulfill({ json: { greeting: defaultGreeting } })
+            })
+            try {
+                const ready = page.getByRole('checkbox', { name: 'App ready' })
+                await ready.uncheck()
+                await expect(input).toBeDisabled()
+                await Promise.all([page.waitForRequest(isGreetingRead), ready.check()])
+                await input.press('Enter')
+                await page.getByRole('button', { name: 'Confirm' }).click()
+                await expect(frame.getByText(greeting, { exact: true })).toBeVisible()
+                await expect(frame.getByText('Gruß gespeichert', { exact: true })).toBeVisible()
+                const readResponse = page.waitForResponse((response) =>
+                    isGreetingRead(response.request()),
+                )
+                releaseRead.resolve()
+                await readResponse
+                await frame.locator('html').evaluate(
+                    () =>
+                        new Promise<void>((resolve) => {
+                            requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+                        }),
+                )
+                await expect(input).toHaveValue(greeting)
+            } finally {
+                releaseRead.resolve()
+            }
 
             await page.getByRole('button', { name: 'Replace app' }).click()
             await expect(page.locator('body')).toHaveAttribute('data-generation', '2')

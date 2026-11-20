@@ -1,5 +1,4 @@
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 
 import app from '../app.config.json'
@@ -28,21 +27,32 @@ async function buildPackage(
 
     const executable = join(directory, 'bin/app')
     await mkdir(join(directory, 'bin'))
-    const compiler = Bun.spawn(
-        [
-            process.execPath,
-            '--no-env-file',
-            'build',
-            '--compile',
-            '--no-compile-autoload-dotenv',
-            '--no-compile-autoload-bunfig',
-            './src/server/index.ts',
-            '--outfile',
-            executable,
-        ],
-        { cwd: root, stdout: 'inherit', stderr: 'inherit' },
-    )
-    if ((await compiler.exited) !== 0) throw new Error('Greeting backend compilation failed')
+    // Bun stages a copy of its executable, which exceeds the candidate sandbox's /tmp budget.
+    const scratch = await mkdtemp(join(directory, '.bun-compile-'))
+    try {
+        const compiler = Bun.spawn(
+            [
+                process.execPath,
+                '--no-env-file',
+                'build',
+                '--compile',
+                '--no-compile-autoload-dotenv',
+                '--no-compile-autoload-bunfig',
+                './src/server/index.ts',
+                '--outfile',
+                executable,
+            ],
+            {
+                cwd: root,
+                env: { ...process.env, TMPDIR: scratch },
+                stdout: 'inherit',
+                stderr: 'inherit',
+            },
+        )
+        if ((await compiler.exited) !== 0) throw new Error('Greeting backend compilation failed')
+    } finally {
+        await rm(scratch, { recursive: true, force: true })
+    }
     await chmod(executable, 0o755)
     await buildUi(join(directory, 'ui'))
     await mkdir(join(directory, 'api'))
@@ -75,9 +85,11 @@ if ([packageDirectory, target, repositoryId, commit].some((value) => value !== u
     }
     await buildPackage(packageDirectory, nativeTarget, { repositoryId, commit })
 } else {
-    const work = await mkdtemp(join(tmpdir(), 'rentnerproxy-app-build-'))
+    const output = join(root, 'dist')
+    await mkdir(output, { recursive: true })
+    const work = await mkdtemp(join(output, '.package-build-'))
     const directory = join(work, 'package')
-    const archive = join(root, 'dist', `${app.id}-${app.version}-${nativeTarget}-dev.tar.zst`)
+    const archive = join(output, `${app.id}-${app.version}-${nativeTarget}-dev.tar.zst`)
     try {
         await buildPackage(directory, nativeTarget, { repositoryId: '1', commit: '0'.repeat(40) })
         await writePackageArchive(directory, archive)

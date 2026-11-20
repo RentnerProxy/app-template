@@ -39,7 +39,7 @@ function Greeting() {
                         id="greeting"
                         disabled={!state.editable}
                         value={state.draft}
-                        maxLength={maxGreetingLength}
+                        maxLength={maxGreetingLength * 2}
                         onChange={(event) => setter.setDraft(event.currentTarget.value)}
                         onKeyDown={(event) => {
                             if (event.key === 'Enter' && !event.nativeEvent.isComposing) {

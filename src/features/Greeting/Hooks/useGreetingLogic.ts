@@ -1,7 +1,7 @@
 import { toast } from '@rentnerkev/toasts'
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 
-import { readGreeting } from '@/lib/greeting.ts'
+import { maxGreetingLength, readGreeting } from '@/lib/greeting.ts'
 
 import { connectGreetingBridge, sessionKey, type Context } from '../bridge.ts'
 
@@ -47,6 +47,7 @@ interface GreetingForm {
 export function useGreetingLogic() {
     const bridge = useRef<ReturnType<typeof connectGreetingBridge> | null>(null)
     const pending = useRef<string | undefined>(undefined)
+    const latestSave = useRef<{ binding: string } | undefined>(undefined)
     const [context, setContext] = useState<Context>()
     const [form, setForm] = useState<GreetingForm>()
     const [savingBinding, setSavingBinding] = useState<string>()
@@ -75,17 +76,22 @@ export function useGreetingLogic() {
 
     useEffect(() => {
         const channel = bridge.current
-        if (!ready || binding === undefined || !channel) return
+        if (!ready || binding === undefined || !channel || pending.current === binding) return
 
+        const saveAtStart = latestSave.current
         let active = true
+        const canApply = () =>
+            active &&
+            channel.isCurrent(binding) &&
+            (latestSave.current === saveAtStart || latestSave.current?.binding !== binding)
         void channel.greeting(binding, 'get-greeting', {}).then(
             (greeting) => {
-                if (active && channel.isCurrent(binding)) {
+                if (canApply()) {
                     setForm({ binding, greeting, draft: greeting })
                 }
             },
             () => {
-                if (active && channel.isCurrent(binding)) {
+                if (canApply()) {
                     setFailedBinding(binding)
                     reportLoadError()
                 }
@@ -108,6 +114,7 @@ export function useGreetingLogic() {
             return
         }
         pending.current = binding
+        latestSave.current = { binding }
         setSavingBinding(binding)
         try {
             if (!(await channel.confirmSave(binding))) return
@@ -147,8 +154,9 @@ export function useGreetingLogic() {
         },
         setter: {
             setDraft: (draft: string) => {
+                const limited = Array.from(draft).slice(0, maxGreetingLength).join('')
                 setForm((entry) =>
-                    entry?.binding === binding && entry ? { ...entry, draft } : entry,
+                    entry?.binding === binding && entry ? { ...entry, draft: limited } : entry,
                 )
             },
         },

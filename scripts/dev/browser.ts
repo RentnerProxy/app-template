@@ -12,6 +12,7 @@ const holder = requiredElement<HTMLDivElement>('#frame-slot')
 const theme = requiredElement<HTMLSelectElement>('#theme')
 const locale = requiredElement<HTMLSelectElement>('#locale')
 const route = requiredElement<HTMLSelectElement>('#route')
+const ready = requiredElement<HTMLInputElement>('#app-ready')
 const dialog = requiredElement<HTMLDialogElement>('dialog')
 const installId = document.body.dataset.installationId
 const installationGeneration = Number(document.body.dataset.installationGeneration)
@@ -68,7 +69,7 @@ function openBridge(nextGeneration: number) {
             theme: theme.value,
             locale: locale.value,
             route: route.value,
-            ready: true,
+            ready: ready.checked,
         })
     }
 
@@ -161,6 +162,10 @@ function openBridge(nextGeneration: number) {
             return
         }
         if (message.type !== 'apiRequest' || !isRecordId(message.idempotencyKey)) return
+        if (!ready.checked) {
+            sendApiResult(requestId, undefined)
+            return
+        }
         const { operationId, idempotencyKey, payload } = message
         if (
             operationId === 'get-greeting' &&
@@ -247,7 +252,7 @@ function replaceFrame() {
     bridge = openBridge(generation)
 }
 
-for (const control of [theme, locale, route]) {
+for (const control of [theme, locale, route, ready]) {
     control.addEventListener('change', () => bridge?.sendContext())
 }
 requiredElement('#replace-frame').addEventListener('click', replaceFrame)
