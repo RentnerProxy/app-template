@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+    profile: chill
+    request_changes_workflow: false
+    path_filters:
+        - '!bun.lock'
+    path_instructions:
+        - path: 'src/**'
+          instructions: |
+              Review correctness, authorization, client/server boundaries, input validation and
+              failure handling. Check how the app receives and uses its platform context.
+        - path: 'scripts/**'
+          instructions: |
+              Check build reproducibility, package contents, input validation and path handling.
+        - path: '.github/**'
+          instructions: |
+              Check least privilege, pinned actions, untrusted PR boundaries, commit identity and
+              secret redaction. Never suggest reading real .env files or exposing secret values.
