@@ -1,0 +1,30 @@
+{
+    "name": "rentnerproxy-app-template",
+    "private": true,
+    "type": "module",
+    "packageManager": "bun@1.4.4",
+    "scripts": {
+        "dev": "bun --no-env-file --no-orphans scripts/dev.ts",
+        "typecheck": "bun --no-env-file --check --tsconfig-override tsconfig.json",
+        "lint": "oxlint src scripts .github/scripts",
+        "format": "bun --no-env-file fmt src scripts .github app.config.json api package.json tsconfig.json README.md",
+        "format:check": "bun --no-env-file fmt --check src scripts .github app.config.json api package.json tsconfig.json README.md",
+        "check": "bun --no-env-file run typecheck && bun --no-env-file run lint && bun --no-env-file run format:check",
+        "test": "bun --no-env-file test src/tests",
+        "build": "bun --no-env-file scripts/build.ts"
+    },
+    "dependencies": {
+        "@rentnerkev/toasts": "3.9.0",
+        "react": "19.3.1",
+        "react-dom": "19.3.1"
+    },
+    "devDependencies": {
+        "@playwright/test": "1.65.1",
+        "@types/bun": "1.4.4",
+        "@types/react": "19.3.0",
+        "@types/react-dom": "19.3.0",
+        "bun-plugin-tailwind": "0.1.2",
+        "oxlint": "1.94.0",
+        "tailwindcss": "4.3.5"
+    }
+}

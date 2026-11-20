@@ -1,0 +1,101 @@
+name: CI
+
+on:
+    pull_request:
+    push:
+        branches: [main]
+
+permissions:
+    contents: read
+
+concurrency:
+    group: app-ci-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    native:
+        name: Linux ${{ matrix.architecture }}
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 15
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - architecture: amd64
+                      runner: ubuntu-24.04
+                      machine: x86_64
+                    - architecture: arm64
+                      runner: ubuntu-24.04-arm
+                      machine: aarch64
+        env:
+            ARCHITECTURE: ${{ matrix.architecture }}
+            MACHINE: ${{ matrix.machine }}
+            APP_TARGET: linux-${{ matrix.architecture }}
+            APP_SOURCE_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id || github.repository_id }}
+            APP_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+            # The same public Linux appliance digest used by the Marketplace candidate pipeline.
+            APPLIANCE_IMAGE: ghcr.io/rentnerproxy/platform@sha256:6a9ecb2330c20f366590f4c6c1c32441104a44c8435d7858cbef4d9496e07b46
+        steps:
+            - name: Check out the exact source revision
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  ref: ${{ env.APP_SOURCE_COMMIT }}
+                  persist-credentials: false
+
+            - name: Set up pinned Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version-file: package.json
+
+            - name: Check and test locked source
+              shell: bash
+              run: |
+                  test "$(uname -s)/$(uname -m)" = "Linux/$MACHINE"
+                  test "$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" = "linux/$ARCHITECTURE"
+                  test "$(git rev-parse HEAD)" = "$APP_SOURCE_COMMIT"
+                  bun install --no-env-file --frozen-lockfile --ignore-scripts
+                  bun --no-env-file run check
+                  bun --no-env-file run test
+
+            - name: Build and inspect the development package
+              shell: bash
+              run: |
+                  export APP_PACKAGE_DIR="$RUNNER_TEMP/package-tree"
+                  mkdir "$APP_PACKAGE_DIR"
+                  docker run --rm --network=none --read-only --cap-drop=ALL \
+                      --security-opt=no-new-privileges --user="$(id -u):$(id -g)" \
+                      --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777 \
+                      --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/source,readonly" \
+                      --mount "type=bind,src=$APP_PACKAGE_DIR,dst=/package-tree" \
+                      --workdir /source --env APP_PACKAGE_DIR=/package-tree \
+                      --env APP_TARGET --env APP_SOURCE_REPOSITORY_ID --env APP_SOURCE_COMMIT \
+                      --env EXPECTED_BUN_VERSION="$(bun --version)" --entrypoint /bin/sh \
+                      "$APPLIANCE_IMAGE" -ceu 'test "$(bun --version)" = "$EXPECTED_BUN_VERSION"; exec bun --no-env-file run build'
+                  bun --no-env-file .github/scripts/ci/prepare-package.ts \
+                      "$APP_PACKAGE_DIR" "$RUNNER_TEMP/greeting-$APP_TARGET.tar.zst" "$RUNNER_TEMP/package"
+
+            - name: Start the packaged backend in the native appliance
+              shell: bash
+              run: |
+                  docker run --rm --network=none --read-only --cap-drop=ALL \
+                      --security-opt=no-new-privileges --user=21001:21004 --pids-limit=88 --memory=384m \
+                      --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777 \
+                      --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/source,readonly" \
+                      --mount "type=bind,src=$RUNNER_TEMP/package,dst=/package,readonly" \
+                      --workdir /source --env GREETING_APP_EXECUTABLE=/package/bin/app --entrypoint bun \
+                      "$APPLIANCE_IMAGE" --no-env-file test src/tests/runtime.test.ts
+
+            - name: Test packaged UI in Chromium
+              shell: bash
+              run: |
+                  node node_modules/@playwright/test/cli.js install --with-deps --only-shell chromium
+                  bun --no-env-file --no-orphans .github/scripts/ci/browser-smoke.ts "$RUNNER_TEMP/package"
+
+            - name: Upload development artifact
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: greeting-linux-${{ matrix.architecture }}-${{ env.APP_SOURCE_COMMIT }}-${{ github.run_attempt }}
+                  path: ${{ runner.temp }}/greeting-linux-${{ matrix.architecture }}.tar.zst
+                  if-no-files-found: error
+                  compression-level: 0
+                  retention-days: 7
