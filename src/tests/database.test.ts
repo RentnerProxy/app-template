@@ -4,6 +4,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { SQL } from 'bun'
+
 import app from '../../app.config.json'
 import { databaseUrl, dropDevDatabase, provisionDevDatabase } from '../../scripts/dev/database.ts'
 import { openAppDatabase } from '../server/database.ts'
@@ -97,8 +99,19 @@ test.skipIf(!adminUrl)(
                 } finally {
                     await database.close()
                 }
-                // A restart finds the recorded data version and runs no step twice.
-                await provisionDevDatabase(adminUrl, name)
+                // A run interrupted after its migration left the owner membership behind. A
+                // restart finds the recorded data version, runs no step and still removes it.
+                const admin = new SQL({ adapter: 'postgres', url: adminUrl })
+                const membership = () =>
+                    admin`SELECT pg_has_role(${'rp_app_' + name}, ${'rp_migrate_' + name}, 'MEMBER') AS member`
+                try {
+                    await admin.unsafe(`GRANT rp_migrate_${name} TO rp_app_${name}`)
+                    expect(await membership()).toStrictEqual([{ member: true }])
+                    await provisionDevDatabase(adminUrl, name)
+                    expect(await membership()).toStrictEqual([{ member: false }])
+                } finally {
+                    await admin.close()
+                }
             })
         } finally {
             await dropDevDatabase(adminUrl, name)
