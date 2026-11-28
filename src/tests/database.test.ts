@@ -5,11 +5,19 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import app from '../../app.config.json'
-import { dropDevDatabase, provisionDevDatabase } from '../../scripts/dev/database.ts'
+import { databaseUrl, dropDevDatabase, provisionDevDatabase } from '../../scripts/dev/database.ts'
 import { openAppDatabase } from '../server/database.ts'
 
 // A disposable PostgreSQL superuser URL, for example from the CI service container.
 const adminUrl = process.env.APP_TEST_DATABASE_URL
+
+/** The same admin URL with its identity repeated as query parameters, which Bun reads first. */
+function queryAdminUrl(url: string) {
+    const admin = new URL(url)
+    admin.searchParams.set('user', decodeURIComponent(admin.username) || 'postgres')
+    admin.searchParams.set('dbname', admin.pathname.slice(1) || 'postgres')
+    return admin.href
+}
 
 async function withUrlFile(run: (path: string) => Promise<void>) {
     const directory = await mkdtemp(join(tmpdir(), 'greeting-database-'))
@@ -28,6 +36,21 @@ test('The database helper requires the platform URL file', async () => {
     })
 })
 
+test('Derived database URLs drop the identity parameters they replace', () => {
+    const derived = new URL(
+        databaseUrl(
+            'postgres://admin:secret@db.example:5432/postgres?user=postgres&password=secret&dbname=postgres&sslmode=require',
+            'rp_app_x',
+            'rp_app_x',
+            'runtime-password',
+        ),
+    )
+    expect(derived.pathname).toBe('/rp_app_x')
+    expect(derived.username).toBe('rp_app_x')
+    expect(derived.password).toBe('runtime-password')
+    expect([...derived.searchParams]).toStrictEqual([['sslmode', 'require']])
+})
+
 test.skipIf(!adminUrl)(
     'Migrations run as the schema owner and the runtime role only changes rows',
     async () => {
@@ -35,11 +58,21 @@ test.skipIf(!adminUrl)(
         const name = 'test_' + randomBytes(6).toString('hex')
         try {
             await withUrlFile(async (path) => {
-                await writeFile(path, (await provisionDevDatabase(adminUrl, name)) + '\n', {
-                    mode: 0o400,
-                })
+                await writeFile(
+                    path,
+                    (await provisionDevDatabase(queryAdminUrl(adminUrl), name)) + '\n',
+                    {
+                        mode: 0o400,
+                    },
+                )
                 const database = await openAppDatabase(path)
                 try {
+                    const [identity] = await database`
+                        SELECT current_user AS role, current_database() AS database`
+                    expect(identity).toStrictEqual({
+                        role: 'rp_app_' + name,
+                        database: 'rp_app_' + name,
+                    })
                     const [saved] = await database`
                         INSERT INTO greeting_history (greeting) VALUES (${'Gude!'})
                         RETURNING greeting`

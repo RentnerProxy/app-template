@@ -13,11 +13,27 @@ function roles(name: string) {
     return { runtime: 'rp_app_' + name, owner: 'rp_migrate_' + name }
 }
 
-function databaseUrl(adminUrl: string, database?: string, user?: string, password?: string) {
+/**
+ * Derive a URL for another database or role. Bun reads the `user`, `password` and `dbname` query
+ * parameters before the userinfo and path, so the replaced parts must not survive as parameters.
+ * Other parameters, such as `sslmode`, stay.
+ */
+export function databaseUrl(adminUrl: string, database?: string, user?: string, password?: string) {
     const url = new URL(adminUrl)
-    if (database) url.pathname = '/' + database
-    if (user) url.username = user
-    if (password) url.password = password
+    if (database) {
+        url.pathname = '/' + database
+        url.searchParams.delete('dbname')
+        url.searchParams.delete('database')
+    }
+    if (user) {
+        url.username = user
+        url.searchParams.delete('user')
+        url.searchParams.delete('username')
+    }
+    if (password) {
+        url.password = password
+        url.searchParams.delete('password')
+    }
     return url.href
 }
 
@@ -107,11 +123,16 @@ export async function provisionDevDatabase(adminUrl: string, name: string) {
                 })
             } finally {
                 await migration.close()
-                await database.unsafe(`REVOKE ${owner} FROM ${runtime}`)
             }
         }
     } finally {
-        await database.close()
+        try {
+            // On every path, also after an interrupted earlier run: the runtime role must not keep
+            // the schema owner membership.
+            await database.unsafe(`REVOKE ${owner} FROM ${runtime}`)
+        } finally {
+            await database.close()
+        }
     }
     return runtimeUrl
 }

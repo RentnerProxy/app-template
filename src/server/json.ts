@@ -1,20 +1,37 @@
 export const maxJsonSize = 4096
 
-export async function readJson(
+/** A JSON document is larger than allowed. Reading it again cannot succeed. */
+export class JsonSizeError extends Error {
+    constructor() {
+        super('JSON exceeds the size limit')
+        this.name = 'JsonSizeError'
+    }
+}
+
+/** Read a body up to `limit` bytes. Only the transport can fail here, besides the size limit. */
+export async function readBytes(
     stream: ReadableStream<Uint8Array>,
     limit = maxJsonSize,
-): Promise<unknown> {
+): Promise<Uint8Array> {
     const chunks: Uint8Array[] = []
     let size = 0
     for await (const chunk of stream) {
         size += chunk.byteLength
-        if (size > limit) throw new Error('JSON exceeds the size limit')
+        if (size > limit) throw new JsonSizeError()
         chunks.push(chunk)
     }
-    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
-        Buffer.concat(chunks, size),
-    )
-    return JSON.parse(text)
+    return Buffer.concat(chunks, size)
+}
+
+export function parseJsonBytes(bytes: Uint8Array): unknown {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes))
+}
+
+export async function readJson(
+    stream: ReadableStream<Uint8Array>,
+    limit = maxJsonSize,
+): Promise<unknown> {
+    return parseJsonBytes(await readBytes(stream, limit))
 }
 
 export function hasJsonContentType(headers: Headers): boolean {

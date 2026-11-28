@@ -14,7 +14,7 @@ import {
     type ProtocolDocument,
 } from '@rentnerproxy/app-contracts'
 
-import { readJson } from './json.ts'
+import { JsonSizeError, parseJsonBytes, readBytes } from './json.ts'
 
 type Operations = typeof httpOperations
 
@@ -91,6 +91,14 @@ export class PlatformApiError extends Error {
     }
 }
 
+/** An event that cannot be accepted, such as an oversized one. Reconnecting delivers it again. */
+export class PlatformEventError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'PlatformEventError'
+    }
+}
+
 /**
  * Create a key once per intended change and reuse it for every retry, also after a restart.
  * The platform then applies the change once; the same key with different input conflicts (409).
@@ -125,19 +133,28 @@ export function createPlatformClient(binding: PlatformBinding) {
         })
     }
 
-    async function read<Name extends PlatformOperation>(name: Name, response: Response) {
-        const body =
-            response.status === 204 || !response.body
-                ? undefined
-                : await readJson(response.body, rpcLimits.maxJsonBytes)
-        const result = parseHttpResponse(name, response.status, body)
-        if (!result.ok) throw new PlatformApiError(name, result.problem)
-        return result.data
+    /** Read the body bytes. Only transport failures and the size limit can occur here. */
+    function receive(response: Response) {
+        return response.status === 204 || !response.body
+            ? undefined
+            : readBytes(response.body, rpcLimits.maxJsonBytes)
+    }
+
+    function result<Name extends PlatformOperation>(
+        name: Name,
+        status: number,
+        bytes: Uint8Array | undefined,
+    ) {
+        const body = bytes === undefined ? undefined : parseJsonBytes(bytes)
+        const parsed = parseHttpResponse(name, status, body)
+        if (!parsed.ok) throw new PlatformApiError(name, parsed.problem)
+        return parsed.data
     }
 
     /**
      * Call a platform operation. Reads and changes with an idempotency key are repeated with the
-     * same key when the platform is briefly unreachable, so a lost response never applies twice.
+     * same key when the platform is briefly unreachable or the response is lost while it arrives,
+     * so a change never applies twice. Invalid responses and platform problems are not repeated.
      */
     async function call<Name extends CallOperation>(
         name: Name,
@@ -150,13 +167,23 @@ export function createPlatformClient(binding: PlatformBinding) {
         const request = prepareHttpRequest(name, controls)
         const repeatable = request.method === 'GET' || controls.idempotencyKey !== undefined
         for (let attempt = 0; ; attempt += 1) {
-            const response = await send(request, signal).catch((error: unknown) => {
-                if (!repeatable || signal.aborted) throw error
-            })
-            if (response && !(repeatable && (response.status === 503 || response.status === 504))) {
-                return read(name, response)
+            try {
+                const response = await send(request, signal)
+                if (repeatable && (response.status === 503 || response.status === 504)) {
+                    await response.body?.cancel()
+                } else {
+                    const bytes = await receive(response)
+                    return result(name, response.status, bytes)
+                }
+            } catch (error) {
+                const transport = !(
+                    error instanceof JsonSizeError ||
+                    error instanceof PlatformApiError ||
+                    error instanceof ContractError ||
+                    error instanceof SyntaxError
+                )
+                if (!repeatable || !transport || signal.aborted) throw error
             }
-            await response?.body?.cancel()
             await pause(Math.min(25 * 2 ** attempt, 1_000), signal)
             signal.throwIfAborted()
         }
@@ -166,7 +193,9 @@ export function createPlatformClient(binding: PlatformBinding) {
     async function* events(cursor?: string, signal?: AbortSignal): AsyncGenerator<PlatformEvent> {
         const options = cursor === undefined ? {} : { resumeCursor: cursor }
         const response = await send(prepareHttpRequest('subscribeToEvents', options), signal)
-        if (response.status !== 200) await read('subscribeToEvents', response)
+        if (response.status !== 200) {
+            result('subscribeToEvents', response.status, await receive(response))
+        }
         const [mediaType] = response.headers.get('Content-Type')?.split(';', 1) ?? []
         if (!response.body || mediaType?.trim() !== 'text/event-stream') {
             throw new Error('The platform did not open an event stream')
@@ -181,11 +210,17 @@ export function createPlatformClient(binding: PlatformBinding) {
 
 export type PlatformClient = ReturnType<typeof createPlatformClient>
 
-/** Yield the data of each Server-Sent Event. Comments such as keepalives carry none. */
+/**
+ * Yield the data of each Server-Sent Event. Comments such as keepalives carry none. An event over
+ * the JSON size limit is rejected before it is yielded, whatever the chunk boundaries are.
+ */
 async function* serverSentData(stream: ReadableStream<Uint8Array>) {
     const decoder = new TextDecoder('utf-8', { fatal: true })
+    const limit = rpcLimits.maxJsonBytes
     let pending = ''
     let data: string[] = []
+    let size = 0
+    const oversized = () => new PlatformEventError('A platform event exceeds the size limit')
     for await (const chunk of stream) {
         const lines = (pending + decoder.decode(chunk, { stream: true })).split('\n')
         pending = lines.pop() ?? ''
@@ -193,13 +228,15 @@ async function* serverSentData(stream: ReadableStream<Uint8Array>) {
             if (line === '') {
                 if (data.length > 0) yield data.join('\n')
                 data = []
+                size = 0
             } else if (line.startsWith('data:')) {
-                data.push(line.slice(line.startsWith('data: ') ? 6 : 5))
+                const value = line.slice(line.startsWith('data: ') ? 6 : 5)
+                size += Buffer.byteLength(value) + (data.length > 0 ? 1 : 0)
+                if (size > limit) throw oversized()
+                data.push(value)
             }
         }
-        if (pending.length + data.join('\n').length > rpcLimits.maxJsonBytes) {
-            throw new Error('A platform event exceeds the size limit')
-        }
+        if (size + Buffer.byteLength(pending) > limit) throw oversized()
     }
 }
 
@@ -217,7 +254,12 @@ function isTransient(error: unknown) {
     if (error instanceof PlatformApiError) {
         return error.problem.status === 429 || error.problem.status >= 500
     }
-    return !(error instanceof ContractError || error instanceof SyntaxError)
+    return !(
+        error instanceof ContractError ||
+        error instanceof SyntaxError ||
+        error instanceof PlatformEventError ||
+        error instanceof JsonSizeError
+    )
 }
 
 /** Keep the durable event stream open: resume after disconnects and resynchronize after 410. */

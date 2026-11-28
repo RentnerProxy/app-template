@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { ContractError, parseProtocolDocument } from '@rentnerproxy/app-contracts'
+import { ContractError, parseProtocolDocument, rpcLimits } from '@rentnerproxy/app-contracts'
 
 import app from '../../app.config.json'
 import { startDevCore } from '../../scripts/dev/core.ts'
@@ -12,6 +12,7 @@ import {
     followPlatformEvents,
     newIdempotencyKey,
     PlatformApiError,
+    PlatformEventError,
     waitForOperation,
     type PlatformClient,
     type PlatformEvent,
@@ -233,3 +234,80 @@ linuxTest('A missing grant is not a stale generation', () =>
         expect(denied.staleGeneration).toBe(false)
     }, []),
 )
+
+/** A core.sock stand-in whose handler decides every response, for transport edge cases. */
+async function withRawCore(
+    handler: (request: Request, attempt: number) => Response,
+    run: (client: PlatformClient, attempts: () => number) => Promise<void>,
+) {
+    const directory = await mkdtemp('/tmp/rentnerproxy-raw-core-')
+    const socket = join(directory, 'core.sock')
+    let attempts = 0
+    const server = Bun.serve({
+        unix: socket,
+        fetch: (request) => handler(request, (attempts += 1)),
+    })
+    try {
+        const client = createPlatformClient({
+            coreSocket: socket,
+            coreAuthorization: 'Bearer ' + 'a'.repeat(43),
+            installationId,
+            generation: 1,
+        })
+        await run(client, () => attempts)
+    } finally {
+        await server.stop(true)
+        await rm(directory, { recursive: true, force: true })
+    }
+}
+
+linuxTest('A repeatable call is repeated when its response is lost while it arrives', () => {
+    const context = parseProtocolDocument('PlatformContext', {
+        appId: app.id,
+        installationId,
+        generation: 1,
+        runtimeProfile: app.requires.runtimeProfile,
+        versions: { appProtocol: '1.0.0', platformApi: '1.0.0', uiBridge: '1.0.0' },
+        capabilities: grants,
+    })
+    return withRawCore(
+        (_request, attempt) => {
+            if (attempt > 1) return Response.json(context)
+            // The connection breaks after the first bytes of the body.
+            const body = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode('{"appId":'))
+                    controller.error(new Error('connection lost'))
+                },
+            })
+            return new Response(body, { headers: { 'Content-Type': 'application/json' } })
+        },
+        async (client, attempts) => {
+            expect(await client.call('getPlatformContext')).toMatchObject({ installationId })
+            expect(attempts()).toBe(2)
+        },
+    )
+})
+
+linuxTest('An oversized event never reaches the app and is not fetched again forever', () => {
+    const data = JSON.stringify({ padding: 'x'.repeat(rpcLimits.maxJsonBytes) })
+    return withRawCore(
+        () =>
+            new Response(`data: ${data}\n\n`, {
+                headers: { 'Content-Type': 'text/event-stream' },
+            }),
+        async (client, attempts) => {
+            const delivered: PlatformEvent[] = []
+            const following = followPlatformEvents(client, {
+                signal: AbortSignal.timeout(5_000),
+                onEvent: (event) => {
+                    delivered.push(event)
+                },
+                onResync: () => undefined,
+            })
+            await expect(following).rejects.toBeInstanceOf(PlatformEventError)
+            expect(delivered).toStrictEqual([])
+            expect(attempts()).toBe(1)
+        },
+    )
+})
