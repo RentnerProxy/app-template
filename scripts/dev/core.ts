@@ -238,7 +238,9 @@ export function startDevCore({
                         change: parseProtocolDocument('OwnedProxyHostChange', body),
                     }
                     operations.set(entry.operation.id, entry)
-                    return () => Response.json(entry.operation, { status: 202 })
+                    // A retry replays the original reply, not the operation's later state.
+                    const accepted = { ...entry.operation }
+                    return () => Response.json(accepted, { status: 202 })
                 })
             case 'getOperation':
             case 'cancelOperation': {
@@ -252,7 +254,8 @@ export function startDevCore({
                     if (entry.operation.status === 'accepted') {
                         entry.operation = { id: entry.operation.id, status: 'cancelled' }
                     }
-                    return () => Response.json(entry.operation, { status: 202 })
+                    const reply = { ...entry.operation }
+                    return () => Response.json(reply, { status: 202 })
                 })
             }
             case 'subscribeToEvents':
