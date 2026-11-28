@@ -35,6 +35,7 @@ for (const [name, mode] of [
     [app.ui.entrypoint, 0o644],
     ['ui/app.css', 0o644],
     ['ui/app.js', 0o644],
+    ...app.data.migrations.map(({ path }) => [path, 0o644] as const),
 ] as const) {
     const file = await lstat(join(extracted, name))
     if (!file.isFile() || file.size === 0 || (file.mode & 0o777) !== mode) {

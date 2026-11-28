@@ -35,6 +35,18 @@ jobs:
             APP_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
             # The same public Linux appliance digest used by the Marketplace candidate pipeline.
             APPLIANCE_IMAGE: ghcr.io/rentnerproxy/platform@sha256:6a9ecb2330c20f366590f4c6c1c32441104a44c8435d7858cbef4d9496e07b46
+        services:
+            # A disposable PostgreSQL 18, the appliance's major version, for the app database test.
+            postgres:
+                image: postgres:18.7-alpine3.24@sha256:0115267ab5a509022df9319c77be365cef335adb71556c75f60f5360ee247e71
+                env:
+                    POSTGRES_HOST_AUTH_METHOD: trust
+                ports: ['127.0.0.1:5432:5432']
+                options: >-
+                    --health-cmd "pg_isready --username=postgres"
+                    --health-interval 2s
+                    --health-timeout 5s
+                    --health-retries 15
         steps:
             - name: Check out the exact source revision
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,6 +61,8 @@ jobs:
 
             - name: Check and test locked source
               shell: bash
+              env:
+                  APP_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/postgres
               run: |
                   test "$(uname -s)/$(uname -m)" = "Linux/$MACHINE"
                   test "$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" = "linux/$ARCHITECTURE"

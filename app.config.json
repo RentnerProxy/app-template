@@ -1,7 +1,7 @@
 {
     "formatVersion": 1,
     "id": "rentnerproxy.greeting",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "display": {
         "name": "Greeting",
         "summary": "Save a greeting in this RentnerProxy installation.",
@@ -20,7 +20,15 @@
     "providers": [],
     "capabilities": [],
     "permissions": ["greeting-read", "greeting-write"],
-    "data": { "targetVersion": 1, "readVersions": [1], "writeVersions": [1], "migrations": [] },
+    "data": {
+        "targetVersion": 2,
+        "readVersions": [2],
+        "writeVersions": [2],
+        "migrations": [
+            { "fromVersion": 0, "toVersion": 2, "path": "migrations/0002-greeting-history.sql" },
+            { "fromVersion": 1, "toVersion": 2, "path": "migrations/0002-greeting-history.sql" }
+        ]
+    },
     "resources": {
         "startupTimeoutMs": 10000,
         "drainTimeoutMs": 2000,

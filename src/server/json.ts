@@ -1,15 +1,18 @@
 export const maxJsonSize = 4096
 
-export async function readJson(stream: ReadableStream<Uint8Array>): Promise<unknown> {
-    const buffer = new Uint8Array(maxJsonSize)
+export async function readJson(
+    stream: ReadableStream<Uint8Array>,
+    limit = maxJsonSize,
+): Promise<unknown> {
+    const chunks: Uint8Array[] = []
     let size = 0
     for await (const chunk of stream) {
-        if (size + chunk.byteLength > buffer.length) throw new Error('JSON exceeds the size limit')
-        buffer.set(chunk, size)
         size += chunk.byteLength
+        if (size > limit) throw new Error('JSON exceeds the size limit')
+        chunks.push(chunk)
     }
     const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
-        buffer.subarray(0, size),
+        Buffer.concat(chunks, size),
     )
     return JSON.parse(text)
 }

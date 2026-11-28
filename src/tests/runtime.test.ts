@@ -33,9 +33,10 @@ test.skipIf(process.platform !== 'linux')(
                     capabilities: [],
                 })
                 const deniedContext = await first.fetchCore({ credential: 'a'.repeat(43) })
-                expect(deniedContext.status).toBe(403)
-                expect(await deniedContext.json()).toStrictEqual({
-                    error: 'installationContextRejected',
+                expect(deniedContext.status).toBe(401)
+                expect(await deniedContext.json()).toMatchObject({
+                    status: 401,
+                    code: 'appCredentialRejected',
                 })
                 expect(first.contextCalls()).toBe(2)
                 const health = await first.fetchApp('health')
@@ -72,8 +73,9 @@ test.skipIf(process.platform !== 'linux')(
                 const staleScope = { generation: 1 }
                 const staleContext = await restarted.fetchCore(staleScope)
                 expect(staleContext.status).toBe(403)
-                expect(await staleContext.json()).toStrictEqual({
-                    error: 'installationContextRejected',
+                expect(await staleContext.json()).toMatchObject({
+                    status: 403,
+                    code: 'installationContextRejected',
                 })
                 const staleWrite = await restarted.callGreeting(
                     'save-greeting',

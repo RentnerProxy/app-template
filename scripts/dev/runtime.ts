@@ -1,9 +1,13 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+
+import { parseProtocolDocument } from '@rentnerproxy/app-contracts'
 
 import appConfig from '../../app.config.json'
 import { isRecord } from '../../src/lib/greeting.ts'
+import { startDevCore } from './core.ts'
+import { provisionDevDatabase } from './database.ts'
 
 const timeoutMs = 5_000
 const versions = { appProtocol: '1.0.0', platformApi: '1.0.0', uiBridge: '1.0.0' }
@@ -16,6 +20,8 @@ interface RuntimeOptions {
     generation?: number
     launcher?: 'platform' | 'candidate'
     rejectContext?: boolean
+    /** A PostgreSQL superuser URL. The stub then provisions the app database like the platform. */
+    databaseAdminUrl?: string
 }
 
 interface Scope {
@@ -29,6 +35,7 @@ export async function startDevRuntime({
     generation = 1,
     launcher = 'platform',
     rejectContext = false,
+    databaseAdminUrl,
 }: RuntimeOptions) {
     if (process.platform !== 'linux') {
         throw new Error('The Greeting dev runtime uses Linux Unix sockets. Run it on Linux or WSL.')
@@ -49,9 +56,7 @@ export async function startDevRuntime({
     const encoding = launcher === 'candidate' ? 'hex' : 'base64url'
     const coreCredential = randomBytes(32).toString(encoding)
     const appCredential = randomBytes(32).toString(encoding)
-    const coreAuthorization = Buffer.from('Bearer ' + coreCredential)
-    let contextCalls = 0
-    let core: ReturnType<typeof Bun.serve> | undefined
+    let core: ReturnType<typeof startDevCore> | undefined
     let child: ReturnType<typeof Bun.spawn> | undefined
     let stopping: Promise<void> | undefined
 
@@ -113,7 +118,7 @@ export async function startDevRuntime({
                 }
             } finally {
                 try {
-                    await core?.stop(true)
+                    await core?.stop()
                 } finally {
                     await rm(socketDirectory, { recursive: true, force: true })
                 }
@@ -123,32 +128,14 @@ export async function startDevRuntime({
     }
 
     try {
-        core = Bun.serve({
-            unix: coreSocket,
-            development: false,
-            maxRequestBodySize: 4096,
-            fetch(request) {
-                const { pathname, search } = new URL(request.url)
-                if (pathname !== '/platform/v1/context' || search) {
-                    return new Response(null, { status: 404 })
-                }
-                if (request.method !== 'GET') {
-                    return new Response(null, { status: 405, headers: { Allow: 'GET' } })
-                }
-                const authorization = Buffer.from(request.headers.get('Authorization') ?? '')
-                if (
-                    authorization.length !== coreAuthorization.length ||
-                    !timingSafeEqual(authorization, coreAuthorization) ||
-                    request.headers.get('X-App-Installation') !== installationId ||
-                    request.headers.get('X-App-Generation') !== String(generation) ||
-                    rejectContext
-                ) {
-                    return Response.json({ error: 'installationContextRejected' }, { status: 403 })
-                }
-                contextCalls += 1
-                return Response.json({ ...binding, capabilities: appConfig.capabilities })
-            },
+        const context = { ...binding, capabilities: appConfig.capabilities }
+        core = startDevCore({
+            socket: coreSocket,
+            credential: coreCredential,
+            context: parseProtocolDocument('PlatformContext', context),
+            rejectContext,
         })
+        const platform = core
         const descriptor = {
             formatVersion: 1,
             ...binding,
@@ -164,6 +151,16 @@ export async function startDevRuntime({
                   '--no-env-file',
                   join(import.meta.dir, '../../src/server/index.ts'),
               ]
+        const env: Record<string, string> = {}
+        if (launcher === 'platform') env.RENTNERPROXY_APP_BOOTSTRAP_FD = '0'
+        if (databaseAdminUrl) {
+            // Like the platform, hand the app a private URL file for its runtime role.
+            const urlFile = join(cwd, 'database-url')
+            const url = await provisionDevDatabase(databaseAdminUrl, 'dev')
+            await rm(urlFile, { force: true })
+            await writeFile(urlFile, url + '\n', { mode: 0o400 })
+            env.RENTNERPROXY_APP_DATABASE_URL_FILE = urlFile
+        }
         child = Bun.spawn({
             cmd:
                 launcher === 'candidate'
@@ -176,7 +173,7 @@ export async function startDevRuntime({
                       ]
                     : command,
             cwd,
-            env: launcher === 'platform' ? { RENTNERPROXY_APP_BOOTSTRAP_FD: '0' } : {},
+            env,
             stdin: new Blob([JSON.stringify(descriptor)]),
             stdout: 'ignore',
             stderr: 'inherit',
@@ -191,7 +188,7 @@ export async function startDevRuntime({
             if (readiness?.ok) {
                 const body: unknown = await readiness.json()
                 if (
-                    contextCalls === 1 &&
+                    platform.contextCalls() === 1 &&
                     isRecord(body) &&
                     body.ready === true &&
                     body.protocolVersion === versions.appProtocol &&
@@ -200,7 +197,7 @@ export async function startDevRuntime({
                     return {
                         installationId,
                         generation,
-                        contextCalls: () => contextCalls,
+                        contextCalls: platform.contextCalls,
                         exited: launched.exited,
                         fetchApp,
                         fetchCore,
