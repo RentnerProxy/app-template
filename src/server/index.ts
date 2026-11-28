@@ -7,6 +7,7 @@ import { defaultGreeting, isRecord, isRecordId, readGreeting } from '@/lib/greet
 import appConfig from '../../app.config.json'
 import { protocolVersion, readBootstrap } from './bootstrap.ts'
 import { hasJsonContentType, maxJsonSize, readJson } from './json.ts'
+import { createPlatformClient } from './platform-client.ts'
 import { verifyPlatformContextService } from './platform-context.ts'
 
 const statePath = 'greeting.json'
@@ -54,7 +55,7 @@ function methodNotAllowed(method: string): Response {
 
 async function start(): Promise<void> {
     const bootstrap = await readBootstrap()
-    await verifyPlatformContextService(bootstrap)
+    await verifyPlatformContextService(createPlatformClient(bootstrap), bootstrap)
     const { appSocket, appAuthorization, installationId } = bootstrap
     const generation = String(bootstrap.generation)
     let greeting = await loadGreetingService()

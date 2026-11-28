@@ -1,5 +1,7 @@
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+
+import { parseAppManifest } from '@rentnerproxy/app-contracts'
 
 import app from '../app.config.json'
 import { writePackageArchive } from './archive.ts'
@@ -15,11 +17,25 @@ function getNativeTarget() {
     throw new Error('Package compilation requires native AMD64 or ARM64 Linux')
 }
 
+/** Package every `migrations/**.sql` file and require each declared migration step among them. */
+async function copyMigrations(directory: string) {
+    const files = await Array.fromAsync(new Bun.Glob('migrations/**/*.sql').scan({ cwd: root }))
+    for (const file of files) {
+        await mkdir(dirname(join(directory, file)), { recursive: true })
+        await copyFile(join(root, file), join(directory, file))
+    }
+    const missing = app.data.migrations.find(({ path }) => !files.includes(path))
+    if (missing) throw new Error('Missing migration step: ' + missing.path)
+}
+
 async function buildPackage(
     directory: string,
     target: ReturnType<typeof getNativeTarget>,
     source: { repositoryId: string; commit: string },
 ) {
+    const manifest = { ...app, target, source }
+    // Fail before compiling when app.config.json breaks the published manifest contract.
+    parseAppManifest(manifest)
     await mkdir(directory, { recursive: true })
     if (!(await lstat(directory)).isDirectory() || (await readdir(directory)).length !== 0) {
         throw new Error('Package output must be an empty directory')
@@ -58,7 +74,8 @@ async function buildPackage(
     await mkdir(join(directory, 'api'))
     await copyFile(join(root, 'api/openapi.json'), join(directory, app.api))
     await copyFile(join(root, 'LICENSE'), join(directory, 'LICENSE'))
-    await Bun.write(join(directory, 'app.json'), JSON.stringify({ ...app, target, source }) + '\n')
+    await copyMigrations(directory)
+    await Bun.write(join(directory, 'app.json'), JSON.stringify(manifest) + '\n')
 }
 
 const nativeTarget = getNativeTarget()

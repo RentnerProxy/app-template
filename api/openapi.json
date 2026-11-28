@@ -1,11 +1,49 @@
 {
     "openapi": "3.1.0",
-    "info": { "title": "Greeting", "version": "1.0.0" },
+    "info": { "title": "Greeting", "version": "1.1.0" },
     "security": [{ "AppCredential": [] }],
     "x-rentnerproxy-ui": {
         "routes": ["overview", "details"],
         "dialogs": ["confirm-save"],
         "events": []
+    },
+    "x-rentnerproxy-native-ui": {
+        "formatVersion": 1,
+        "pages": [
+            {
+                "kind": "form",
+                "route": "overview",
+                "label": { "en": "Overview", "de": "Übersicht" },
+                "read": "get-greeting",
+                "write": "save-greeting",
+                "confirm": "confirm-save",
+                "submitLabel": { "en": "Save greeting", "de": "Gruß speichern" },
+                "fields": [
+                    {
+                        "field": "greeting",
+                        "label": { "en": "New greeting", "de": "Neuer Gruß" },
+                        "help": {
+                            "en": "The greeting is saved in this app installation.",
+                            "de": "Der Gruß wird in dieser App-Installation gespeichert."
+                        },
+                        "minLength": 1,
+                        "maxLength": 120,
+                        "trim": true
+                    }
+                ]
+            },
+            {
+                "kind": "table",
+                "route": "details",
+                "label": "Details",
+                "description": {
+                    "en": "Your greeting is stored in this app installation.",
+                    "de": "Dein Gruß wird in dieser App-Installation gespeichert."
+                },
+                "read": "get-greeting",
+                "columns": [{ "field": "greeting", "label": { "en": "Greeting", "de": "Gruß" } }]
+            }
+        ]
     },
     "paths": {
         "/app/v1/api/get-greeting": {

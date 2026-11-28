@@ -8,6 +8,7 @@ interface DevHostOptions {
     uiDirectory: string
     executable?: string
     dataDirectory: string
+    databaseAdminUrl?: string
     port?: number
 }
 
@@ -97,6 +98,7 @@ export async function startDevHost({
     uiDirectory,
     executable,
     dataDirectory,
+    databaseAdminUrl,
     port = 0,
 }: DevHostOptions) {
     for (const filename of assets.keys()) {
@@ -112,7 +114,11 @@ export async function startDevHost({
     const [browserScript] = build.outputs
     if (!build.success || !browserScript) throw new Error('Could not build the local Platform host')
 
-    const runtime = await startDevRuntime({ dataDirectory, ...(executable && { executable }) })
+    const runtime = await startDevRuntime({
+        dataDirectory,
+        ...(executable && { executable }),
+        ...(databaseAdminUrl && { databaseAdminUrl }),
+    })
 
     try {
         const server = Bun.serve({

@@ -1,6 +1,6 @@
 app:
     - changed-files:
-          - any-glob-to-any-file: ['src/**', 'api/**', 'app.config.json']
+          - any-glob-to-any-file: ['src/**', 'api/**', 'migrations/**', 'app.config.json']
 ci:
     - changed-files:
           - any-glob-to-any-file: ['.github/**', '.coderabbit.yaml', 'scripts/**']
