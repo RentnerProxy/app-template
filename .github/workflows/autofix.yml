@@ -15,7 +15,7 @@ concurrency:
 jobs:
     autofix:
         name: Autofix
-        if: github.repository == 'RentnerProxy/app-template'
+        if: github.repository_owner == 'RentnerProxy'
         runs-on: ubuntu-24.04
         timeout-minutes: 10
         steps:
