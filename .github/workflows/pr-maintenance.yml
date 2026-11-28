@@ -36,7 +36,7 @@ concurrency:
 jobs:
     maintain:
         name: Update PR branches and merge eligible Dependabot updates
-        if: github.repository == 'RentnerProxy/app-template' && github.ref == 'refs/heads/main'
+        if: github.repository_owner == 'RentnerProxy' && github.ref == 'refs/heads/main'
         runs-on: ubuntu-latest
         timeout-minutes: 15
         steps:
