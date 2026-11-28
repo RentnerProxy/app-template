@@ -46,10 +46,14 @@ function hostDocument(installationId: string, generation: number) {
     <h1>Greeting app development</h1>
     <p>Local Platform stub</p>
     <label>Theme <select id="theme"><option value="light">Light</option><option value="dark">Dark</option></select></label>
-    <label>Language <select id="locale"><option value="en">English</option><option value="de">Deutsch</option></select></label>
+    <label>Language <select id="locale"><option value="en">English</option><option value="de">Deutsch</option><option value="fr-FR">Français</option></select></label>
     <label>Route <select id="route"><option value="overview">Overview</option><option value="details">Details</option></select></label>
     <label><input id="app-ready" type="checkbox" checked> App ready</label>
     <button id="replace-frame" type="button">Replace app</button>
+    <div id="bridge-failed" role="alert" hidden>
+        <p>The app did not connect to the local Platform.</p>
+        <button id="retry-frame" type="button">Reload app</button>
+    </div>
     <div id="frame-slot"></div>
     <dialog aria-label="Confirm greeting">
         <p>Save this greeting?</p>

@@ -99,6 +99,7 @@ export function connectGreetingBridge(onContext: (context: Context | undefined) 
     control.port1.start()
     const nonce = new URLSearchParams(window.location.hash.slice(1)).get('nonce')
     if (nonce && /^[A-Za-z0-9_-]{1,128}$/u.test(nonce) && window.parent !== window) {
+        // `location.origin` is the origin of the document URL, not the opaque "null" of the sandbox.
         window.parent.postMessage({ type: 'runtime:ready', nonce }, window.location.origin, [
             control.port2,
         ])

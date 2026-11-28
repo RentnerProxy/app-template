@@ -276,11 +276,15 @@ linuxTest('A repeatable call is repeated when its response is lost while it arri
     return withRawCore(
         (_request, attempt) => {
             if (attempt > 1) return Response.json(context)
-            // The connection breaks after the first bytes of the body.
+            // The connection breaks after the first bytes of the body: the stream is only errored
+            // on a later pull, once the client has read the first chunk. Erroring it right after
+            // the enqueue would discard the chunk before anything is sent.
+            let pulls = 0
             const body = new ReadableStream<Uint8Array>({
-                start(controller) {
-                    controller.enqueue(new TextEncoder().encode('{"appId":'))
-                    controller.error(new Error('connection lost'))
+                pull(controller) {
+                    pulls += 1
+                    if (pulls === 1) controller.enqueue(new TextEncoder().encode('{"appId":'))
+                    else controller.error(new Error('connection lost'))
                 },
             })
             return new Response(body, { headers: { 'Content-Type': 'application/json' } })
@@ -463,3 +467,37 @@ linuxTest('A cancelled follower starts no callback for a buffered event', () =>
         },
     ),
 )
+
+linuxTest('Event lines end with CR, LF or CRLF, however the chunks split', async () => {
+    const lf = eventFrame('cursor-1') + eventFrame('cursor-2')
+    const cr = lf.replaceAll('\n', '\r')
+    const crlf = lf.replaceAll('\n', '\r\n')
+    const middle = crlf.indexOf('\r\n\r\n') + 3
+    const variants = [
+        [lf],
+        [cr],
+        // A CR at the end of a chunk waits for the next chunk to tell CR from CRLF.
+        cr.split(/(?<=\r)/u),
+        [crlf],
+        crlf.split(/(?<=\r)/u),
+        [crlf.slice(0, middle), crlf.slice(middle)],
+    ]
+    for (const chunks of variants) {
+        await withRawCore(
+            () => new Response(streamOf(...chunks), { headers: eventStream }),
+            async (client) => {
+                const controller = new AbortController()
+                const delivered: string[] = []
+                await followPlatformEvents(client, {
+                    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]),
+                    onEvent: (event) => {
+                        delivered.push(event.cursor)
+                        if (delivered.length === 2) controller.abort()
+                    },
+                    onResync: () => undefined,
+                })
+                expect(delivered).toStrictEqual(['cursor-1', 'cursor-2'])
+            },
+        )
+    }
+})

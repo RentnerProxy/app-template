@@ -54,8 +54,11 @@ try {
             equal((await page.request.get(new URL(src, host.url).href)).status(), 403)
 
             await page.selectOption('#theme', 'dark')
-            await page.selectOption('#locale', 'de')
+            // The document language follows the copy the app renders, not the host locale.
+            await page.selectOption('#locale', 'fr-FR')
             await expect(frame.locator('html')).toHaveAttribute('data-theme', 'dark')
+            await expect(frame.locator('html')).toHaveAttribute('lang', 'en')
+            await page.selectOption('#locale', 'de')
             await expect(frame.locator('html')).toHaveAttribute('lang', 'de')
             await frame.getByRole('button', { name: 'Details' }).click()
             await expect(
@@ -110,7 +113,34 @@ try {
 
             await page.getByRole('button', { name: 'Replace app' }).click()
             await expect(page.locator('body')).toHaveAttribute('data-generation', '2')
+            // The new document starts light and English, so only a handshake applies the context.
+            await expect(frame.locator('html')).toHaveAttribute('data-theme', 'dark')
+            await expect(frame.locator('html')).toHaveAttribute('lang', 'de')
             await expect(input).toHaveValue(greeting)
+
+            // A page kept for Back and Forward keeps its bridge, which still delivers context.
+            await page.evaluate(() => {
+                dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))
+                dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
+            })
+            await page.selectOption('#theme', 'light')
+            await expect(frame.locator('html')).toHaveAttribute('data-theme', 'light')
+
+            // A frame that never announces itself is not closed silently: the host offers a reload.
+            let blockScript = true
+            await page.route('**/app.js', (route) =>
+                blockScript ? route.abort() : route.fallback(),
+            )
+            await page.getByRole('button', { name: 'Replace app' }).click()
+            const failure = page.locator('#bridge-failed')
+            await expect(failure).toBeVisible({ timeout: 9_000 })
+            await expect(page.locator('#greeting-app')).toHaveCount(0)
+            blockScript = false
+            await failure.getByRole('button', { name: 'Reload app' }).click()
+            await expect(failure).toBeHidden()
+            await expect(page.locator('body')).toHaveAttribute('data-generation', '4')
+            await expect(frame.getByRole('heading', { name: 'Greeting' })).toBeVisible()
+            await expect(frame.locator('html')).toHaveAttribute('data-theme', 'light')
             equal(external.length, 0, 'The packaged UI made an external request')
             equal(errors.length, 0, errors.join('\n'))
             console.log('Packaged Greeting passed the sandboxed browser smoke')

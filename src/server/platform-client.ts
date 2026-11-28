@@ -247,10 +247,8 @@ async function* serverSentData(stream: ReadableStream<Uint8Array>) {
         const value = line.slice(line.startsWith('data: ') ? 6 : 5)
         return Buffer.byteLength(value) + (data.length > 0 ? 1 : 0)
     }
-    for await (const chunk of stream) {
-        const lines = (pending + decode(chunk)).split('\n')
-        pending = lines.pop() ?? ''
-        for (const line of lines.map((value) => value.replace(/\r$/u, ''))) {
+    function* dispatch(lines: string[]) {
+        for (const line of lines) {
             if (line === '') {
                 if (data.length > 0) yield data.join('\n')
                 data = []
@@ -261,12 +259,22 @@ async function* serverSentData(stream: ReadableStream<Uint8Array>) {
                 data.push(line.slice(line.startsWith('data: ') ? 6 : 5))
             }
         }
+    }
+    for await (const chunk of stream) {
+        // Lines end with CR, LF or CRLF. A CR that ends the chunk may be half of a CRLF, so it waits.
+        const text = pending + decode(chunk)
+        const held = text.endsWith('\r') ? '\r' : ''
+        const lines = text.slice(0, text.length - held.length).split(/\r\n|\r|\n/u)
+        pending = (lines.pop() ?? '') + held
+        yield* dispatch(lines)
         // An incomplete line counts as it will once complete, so chunk boundaries do not matter.
         if (Buffer.byteLength(pending) > lineLimit) throw oversized()
         if (size + dataBytes(pending.replace(/\r$/u, '')) > limit) throw oversized()
     }
     // A stream that ends inside a UTF-8 sequence carries an undecodable event.
     decode()
+    // A CR that ends the stream ends its line, as no LF can follow it.
+    if (pending.endsWith('\r')) yield* dispatch([pending.slice(0, -1)])
 }
 
 interface FollowOptions {

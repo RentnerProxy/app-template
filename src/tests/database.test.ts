@@ -9,17 +9,10 @@ import { SQL } from 'bun'
 import app from '../../app.config.json'
 import { databaseUrl, dropDevDatabase, provisionDevDatabase } from '../../scripts/dev/database.ts'
 import { openAppDatabase } from '../server/database.ts'
+import { queryAdminUrl } from './support/database.ts'
 
 // A disposable PostgreSQL superuser URL, for example from the CI service container.
 const adminUrl = process.env.APP_TEST_DATABASE_URL
-
-/** The same admin URL with its identity repeated as query parameters, which Bun reads first. */
-function queryAdminUrl(url: string) {
-    const admin = new URL(url)
-    admin.searchParams.set('user', decodeURIComponent(admin.username) || 'postgres')
-    admin.searchParams.set('dbname', admin.pathname.slice(1) || 'postgres')
-    return admin.href
-}
 
 async function withUrlFile(run: (path: string) => Promise<void>) {
     const directory = await mkdtemp(join(tmpdir(), 'greeting-database-'))
@@ -51,6 +44,23 @@ test('Derived database URLs drop the identity parameters they replace', () => {
     expect(derived.username).toBe('rp_app_x')
     expect(derived.password).toBe('runtime-password')
     expect([...derived.searchParams]).toStrictEqual([['sslmode', 'require']])
+})
+
+test('The admin URL keeps the identity parameters it already has', () => {
+    const identity = (url: string) => {
+        const { searchParams } = new URL(queryAdminUrl(url))
+        return [searchParams.get('user'), searchParams.get('dbname')]
+    }
+    expect(identity('postgres://admin@db.example/main')).toStrictEqual(['admin', 'main'])
+    expect(identity('postgres://db.example')).toStrictEqual(['postgres', 'postgres'])
+    expect(identity('postgres://db.example/?user=ci_admin&dbname=ci_main')).toStrictEqual([
+        'ci_admin',
+        'ci_main',
+    ])
+    expect(identity('postgres://admin@db.example/main?user=ci_admin')).toStrictEqual([
+        'ci_admin',
+        'main',
+    ])
 })
 
 test.skipIf(!adminUrl)(
