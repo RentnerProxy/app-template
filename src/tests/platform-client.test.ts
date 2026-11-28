@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -13,6 +13,7 @@ import {
     newIdempotencyKey,
     PlatformApiError,
     PlatformEventError,
+    PlatformResponseError,
     waitForOperation,
     type PlatformClient,
     type PlatformEvent,
@@ -134,6 +135,8 @@ linuxTest('Durable operations settle, replay by key and can be cancelled', () =>
             id: accepted.id,
             status: 'succeeded',
         })
+        // A retry after the operation settled still replays the original reply.
+        expect(await client.call('updateOwnedProxyHost', create)).toStrictEqual(accepted)
         const { hosts } = await client.call('listProxyHosts', { body: { limit: 10 } })
         const [host] = hosts
         if (!host) throw new Error('The owned host is missing')
@@ -344,6 +347,119 @@ linuxTest('A reply that cannot be decoded is not requested again', () =>
         async (client, attempts) => {
             await expect(client.call('getPlatformContext')).rejects.toThrow()
             expect(attempts()).toBe(1)
+        },
+    ),
+)
+
+function eventFrame(cursor: string) {
+    const event = {
+        id: randomUUID(),
+        cursor,
+        type: 'appNotificationPublished',
+        occurredAt: new Date().toISOString(),
+        resourceId: installationId,
+        payload: notification,
+    }
+    return `id: ${cursor}\ndata: ${JSON.stringify(event)}\n\n`
+}
+
+/** A body that sends each chunk separately, so the client reads them one by one. */
+function streamOf(...chunks: (string | Uint8Array)[]) {
+    const encoder = new TextEncoder()
+    const queue = [...chunks]
+    return new ReadableStream<Uint8Array>({
+        async pull(controller) {
+            const chunk = queue.shift()
+            if (chunk === undefined) return controller.close()
+            controller.enqueue(typeof chunk === 'string' ? encoder.encode(chunk) : chunk)
+            if (queue.length > 0) await Bun.sleep(50)
+        },
+    })
+}
+
+const eventStream = { 'Content-Type': 'text/event-stream' }
+
+async function followOnce(client: PlatformClient) {
+    const delivered: PlatformEvent[] = []
+    const error = await followPlatformEvents(client, {
+        signal: AbortSignal.timeout(5_000),
+        onEvent: (event) => {
+            delivered.push(event)
+        },
+        onResync: () => undefined,
+    }).then(
+        () => undefined,
+        (rejection: unknown) => rejection,
+    )
+    return { delivered, error }
+}
+
+linuxTest('An undecodable subscription reply is final', () =>
+    withRawCore(
+        () =>
+            new Response(new Uint8Array([0x7b, 0xff, 0x7d]), {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        async (client, attempts) => {
+            const { error } = await followOnce(client)
+            expect(error).toBeInstanceOf(PlatformResponseError)
+            expect(attempts()).toBe(1)
+        },
+    ),
+)
+
+linuxTest('An event at the size limit is accepted however its line is split', async () => {
+    const value = JSON.stringify({ padding: 'x'.repeat(rpcLimits.maxJsonBytes - 14) })
+    expect(Buffer.byteLength(value)).toBe(rpcLimits.maxJsonBytes)
+    for (const chunks of [
+        [`data: ${value}\n\n`],
+        [`data: ${value.slice(0, -3)}`, `${value.slice(-3)}\r\n\r\n`],
+    ]) {
+        await withRawCore(
+            () => new Response(streamOf(...chunks), { headers: eventStream }),
+            async (client) => {
+                // The size check accepts it; the contract then rejects the padding document.
+                const { error } = await followOnce(client)
+                expect(error).toBeInstanceOf(ContractError)
+            },
+        )
+    }
+})
+
+linuxTest('A stream that ends inside a UTF-8 sequence is final', () =>
+    withRawCore(
+        () =>
+            new Response(streamOf('data: {"x":"', new Uint8Array([0xc3])), {
+                headers: eventStream,
+            }),
+        async (client, attempts) => {
+            const { delivered, error } = await followOnce(client)
+            expect(error).toBeInstanceOf(PlatformEventError)
+            expect(delivered).toStrictEqual([])
+            expect(attempts()).toBe(1)
+        },
+    ),
+)
+
+linuxTest('A cancelled follower starts no callback for a buffered event', () =>
+    withRawCore(
+        () =>
+            new Response(streamOf(eventFrame('cursor-1') + eventFrame('cursor-2')), {
+                headers: eventStream,
+            }),
+        async (client) => {
+            const controller = new AbortController()
+            const delivered: string[] = []
+            await followPlatformEvents(client, {
+                signal: controller.signal,
+                onEvent: (event) => {
+                    delivered.push(event.cursor)
+                    controller.abort()
+                },
+                onResync: () => undefined,
+            })
+            expect(delivered).toStrictEqual(['cursor-1'])
         },
     ),
 )

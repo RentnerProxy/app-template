@@ -99,6 +99,14 @@ export class PlatformEventError extends Error {
     }
 }
 
+/** A platform reply that is not valid UTF-8 JSON. Asking again returns the same reply. */
+export class PlatformResponseError extends Error {
+    constructor(operation: PlatformOperation, options?: ErrorOptions) {
+        super(`The platform reply to ${operation} is not valid JSON`, options)
+        this.name = 'PlatformResponseError'
+    }
+}
+
 /**
  * Create a key once per intended change and reuse it for every retry, also after a restart.
  * The platform then applies the change once; the same key with different input conflicts (409).
@@ -145,7 +153,12 @@ export function createPlatformClient(binding: PlatformBinding) {
         status: number,
         bytes: Uint8Array | undefined,
     ) {
-        const body = bytes === undefined ? undefined : parseJsonBytes(bytes)
+        let body: unknown
+        try {
+            body = bytes === undefined ? undefined : parseJsonBytes(bytes)
+        } catch (error) {
+            throw new PlatformResponseError(name, { cause: error })
+        }
         const parsed = parseHttpResponse(name, status, body)
         if (!parsed.ok) throw new PlatformApiError(name, parsed.problem)
         return parsed.data
@@ -215,16 +228,24 @@ export type PlatformClient = ReturnType<typeof createPlatformClient>
 async function* serverSentData(stream: ReadableStream<Uint8Array>) {
     const decoder = new TextDecoder('utf-8', { fatal: true })
     const limit = rpcLimits.maxJsonBytes
+    // Room for a field name such as `data: ` and a trailing carriage return on one line.
+    const lineLimit = limit + 16
     let pending = ''
     let data: string[] = []
     let size = 0
     const oversized = () => new PlatformEventError('A platform event exceeds the size limit')
-    const decode = (chunk: Uint8Array) => {
+    const decode = (chunk?: Uint8Array) => {
         try {
-            return decoder.decode(chunk, { stream: true })
+            return chunk ? decoder.decode(chunk, { stream: true }) : decoder.decode()
         } catch {
             throw new PlatformEventError('A platform event is not valid UTF-8')
         }
+    }
+    // The bytes a `data:` line adds to its event: the value, plus the newline that joins it.
+    const dataBytes = (line: string) => {
+        if (!line.startsWith('data:')) return 0
+        const value = line.slice(line.startsWith('data: ') ? 6 : 5)
+        return Buffer.byteLength(value) + (data.length > 0 ? 1 : 0)
     }
     for await (const chunk of stream) {
         const lines = (pending + decode(chunk)).split('\n')
@@ -235,14 +256,17 @@ async function* serverSentData(stream: ReadableStream<Uint8Array>) {
                 data = []
                 size = 0
             } else if (line.startsWith('data:')) {
-                const value = line.slice(line.startsWith('data: ') ? 6 : 5)
-                size += Buffer.byteLength(value) + (data.length > 0 ? 1 : 0)
+                size += dataBytes(line)
                 if (size > limit) throw oversized()
-                data.push(value)
+                data.push(line.slice(line.startsWith('data: ') ? 6 : 5))
             }
         }
-        if (size + Buffer.byteLength(pending) > limit) throw oversized()
+        // An incomplete line counts as it will once complete, so chunk boundaries do not matter.
+        if (Buffer.byteLength(pending) > lineLimit) throw oversized()
+        if (size + dataBytes(pending.replace(/\r$/u, '')) > limit) throw oversized()
     }
+    // A stream that ends inside a UTF-8 sequence carries an undecodable event.
+    decode()
 }
 
 interface FollowOptions {
@@ -263,6 +287,7 @@ function isTransient(error: unknown) {
         error instanceof ContractError ||
         error instanceof SyntaxError ||
         error instanceof PlatformEventError ||
+        error instanceof PlatformResponseError ||
         error instanceof JsonSizeError
     )
 }
@@ -274,6 +299,8 @@ export async function followPlatformEvents(client: PlatformClient, options: Foll
     while (!signal.aborted) {
         try {
             for await (const event of client.events(cursor, signal)) {
+                // A callback may cancel; do not start another one for a buffered event.
+                if (signal.aborted) return
                 await options.onEvent(event)
                 cursor = event.cursor
             }
