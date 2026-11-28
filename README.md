@@ -25,6 +25,7 @@ The stub also serves the `core.sock` platform API from the published contract: c
 - Change the namespaced app ID, version, display metadata and requested permissions in `app.config.json`. The build validates it against [`@rentnerproxy/app-contracts`](https://www.npmjs.com/package/@rentnerproxy/app-contracts).
 - Define app operations and their permissions in `api/openapi.json`. The example separates `greeting-read` and `greeting-write`. This document describes only the app's own operations; the platform protocol comes from the contract package. Its `x-rentnerproxy-native-ui` block lets the platform render the overview form and details table natively.
 - Implement operations in `src/server/` and the static React UI in `src/features/Greeting/`. The UI requests operations through the typed MessageChannel bridge.
+- A repository created from this template does not inherit its labels. In a new RentnerProxy repository, copy the labels that `.github/labeler.yml` and Dependabot use before the first pull request: `gh label clone RentnerProxy/app-template --repo RentnerProxy/<repository>`. Outside the RentnerProxy organization, the labeling, autofix and PR maintenance jobs are skipped.
 
 Platform passes the bootstrap descriptor on stdin and authorizes access to the private `app.sock` and `core.sock` sockets. The backend verifies its own installation context with `GET /platform/v1/context` before it announces readiness. Greeting stores its greeting in its private working directory.
 
