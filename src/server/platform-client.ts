@@ -167,23 +167,20 @@ export function createPlatformClient(binding: PlatformBinding) {
         const request = prepareHttpRequest(name, controls)
         const repeatable = request.method === 'GET' || controls.idempotencyKey !== undefined
         for (let attempt = 0; ; attempt += 1) {
+            let received: { status: number; bytes: Uint8Array | undefined } | undefined
             try {
                 const response = await send(request, signal)
                 if (repeatable && (response.status === 503 || response.status === 504)) {
                     await response.body?.cancel()
                 } else {
-                    const bytes = await receive(response)
-                    return result(name, response.status, bytes)
+                    received = { status: response.status, bytes: await receive(response) }
                 }
             } catch (error) {
-                const transport = !(
-                    error instanceof JsonSizeError ||
-                    error instanceof PlatformApiError ||
-                    error instanceof ContractError ||
-                    error instanceof SyntaxError
-                )
-                if (!repeatable || !transport || signal.aborted) throw error
+                // Only the transport can fail while sending and receiving, besides the size limit.
+                if (!repeatable || error instanceof JsonSizeError || signal.aborted) throw error
             }
+            // Decoding, JSON, contract and platform errors are final: the same reply fails again.
+            if (received) return result(name, received.status, received.bytes)
             await pause(Math.min(25 * 2 ** attempt, 1_000), signal)
             signal.throwIfAborted()
         }
@@ -212,7 +209,8 @@ export type PlatformClient = ReturnType<typeof createPlatformClient>
 
 /**
  * Yield the data of each Server-Sent Event. Comments such as keepalives carry none. An event over
- * the JSON size limit is rejected before it is yielded, whatever the chunk boundaries are.
+ * the JSON size limit or with invalid UTF-8 is rejected before it is yielded, whatever the chunk
+ * boundaries are. Failures of the stream itself stay transport errors.
  */
 async function* serverSentData(stream: ReadableStream<Uint8Array>) {
     const decoder = new TextDecoder('utf-8', { fatal: true })
@@ -221,8 +219,15 @@ async function* serverSentData(stream: ReadableStream<Uint8Array>) {
     let data: string[] = []
     let size = 0
     const oversized = () => new PlatformEventError('A platform event exceeds the size limit')
+    const decode = (chunk: Uint8Array) => {
+        try {
+            return decoder.decode(chunk, { stream: true })
+        } catch {
+            throw new PlatformEventError('A platform event is not valid UTF-8')
+        }
+    }
     for await (const chunk of stream) {
-        const lines = (pending + decoder.decode(chunk, { stream: true })).split('\n')
+        const lines = (pending + decode(chunk)).split('\n')
         pending = lines.pop() ?? ''
         for (const line of lines.map((value) => value.replace(/\r$/u, ''))) {
             if (line === '') {

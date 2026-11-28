@@ -311,3 +311,39 @@ linuxTest('An oversized event never reaches the app and is not fetched again for
         },
     )
 })
+
+linuxTest('An event with invalid UTF-8 is final and never reaches the app', () => {
+    const invalid = new Uint8Array([...new TextEncoder().encode('data: {"x":"'), 0xff, 0x22, 0x7d])
+    return withRawCore(
+        () =>
+            new Response(new Blob([invalid, new TextEncoder().encode('\n\n')]), {
+                headers: { 'Content-Type': 'text/event-stream' },
+            }),
+        async (client, attempts) => {
+            const delivered: PlatformEvent[] = []
+            const following = followPlatformEvents(client, {
+                signal: AbortSignal.timeout(5_000),
+                onEvent: (event) => {
+                    delivered.push(event)
+                },
+                onResync: () => undefined,
+            })
+            await expect(following).rejects.toBeInstanceOf(PlatformEventError)
+            expect(delivered).toStrictEqual([])
+            expect(attempts()).toBe(1)
+        },
+    )
+})
+
+linuxTest('A reply that cannot be decoded is not requested again', () =>
+    withRawCore(
+        () =>
+            new Response(new Uint8Array([0x7b, 0xff, 0x7d]), {
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        async (client, attempts) => {
+            await expect(client.call('getPlatformContext')).rejects.toThrow()
+            expect(attempts()).toBe(1)
+        },
+    ),
+)
