@@ -14,12 +14,15 @@ const locale = requiredElement<HTMLSelectElement>('#locale')
 const route = requiredElement<HTMLSelectElement>('#route')
 const ready = requiredElement<HTMLInputElement>('#app-ready')
 const dialog = requiredElement<HTMLDialogElement>('dialog')
+const failure = requiredElement<HTMLElement>('#bridge-failed')
 const installId = document.body.dataset.installationId
 const installationGeneration = Number(document.body.dataset.installationGeneration)
 if (!isRecordId(installId) || !isGeneration(installationGeneration)) {
     throw new Error('Missing local Platform installation context')
 }
 const installation = { installId, installationGeneration }
+/** How long a frame has to load, announce itself and connect, each counted from its own start. */
+const handshakeMs = 5_000
 let generation = 0
 let requests = 0
 let bridge: ReturnType<typeof openBridge> | undefined
@@ -46,7 +49,7 @@ function openBridge(nextGeneration: number) {
     let closed = false
     const pending = new Set<string>()
     const active = new AbortController()
-    const handshakeTimeout = window.setTimeout(close, 5_000)
+    let handshakeTimeout = window.setTimeout(fail, handshakeMs)
 
     function close() {
         if (closed) return
@@ -59,6 +62,14 @@ function openBridge(nextGeneration: number) {
             dialogRequest = undefined
             dialog.close()
         }
+    }
+
+    /** Never end a session silently: close it and tell the developer, who can reload the app. */
+    function fail() {
+        if (closed) return
+        close()
+        frame.remove()
+        failure.hidden = false
     }
 
     function sendContext() {
@@ -91,18 +102,21 @@ function openBridge(nextGeneration: number) {
         }
         window.removeEventListener('message', receiveReady)
         control = transferred
-        control.onmessageerror = close
+        control.onmessageerror = fail
         control.onmessage = (event) => {
             for (const port of event.ports) port.close()
-            close()
+            fail()
         }
+        // A frame that announced itself gets the full deadline to connect, however late it did.
+        clearTimeout(handshakeTimeout)
+        handshakeTimeout = window.setTimeout(fail, handshakeMs)
         control.start()
         bootstrap()
     }
 
     function receiveLoad() {
         if (loaded) {
-            close()
+            fail()
             return
         }
         loaded = true
@@ -113,7 +127,7 @@ function openBridge(nextGeneration: number) {
         if (!loaded || !control || session || closed) return
         const channel = new MessageChannel()
         session = channel.port1
-        session.onmessageerror = close
+        session.onmessageerror = fail
         session.onmessage = receiveSession
         session.start()
         control.postMessage({ type: 'runtime:bootstrap', bridgeVersion: '1.0.0', ...binding }, [
@@ -202,6 +216,14 @@ function openBridge(nextGeneration: number) {
             sendApiResult(requestId, undefined)
             return
         }
+        // Serialize first: a payload that cannot be sent must not hold a slot nothing would free.
+        let body: string
+        try {
+            body = JSON.stringify({ operationId, idempotencyKey, payload })
+        } catch {
+            sendApiResult(requestId, undefined)
+            return
+        }
         requests += 1
         document.body.dataset.appRpcs = String(requests)
         pending.add(requestId)
@@ -209,7 +231,7 @@ function openBridge(nextGeneration: number) {
             signal: active.signal,
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ operationId, idempotencyKey, payload }),
+            body,
         })
             .then(async (response) => {
                 const greeting = response.ok ? readGreeting(await response.json()) : undefined
@@ -217,7 +239,7 @@ function openBridge(nextGeneration: number) {
             })
             .catch(() => sendApiResult(requestId, undefined))
             .finally(() => pending.delete(requestId))
-            .catch(close)
+            .catch(fail)
     }
 
     function sendApiResult(requestId: string, greeting: string | undefined) {
@@ -241,11 +263,12 @@ function openBridge(nextGeneration: number) {
     window.addEventListener('message', receiveReady, { signal: active.signal })
     frame.addEventListener('load', receiveLoad, { signal: active.signal })
     holder.replaceChildren(frame)
-    return { close, sendContext, settleDialog }
+    return { close, isClosed: () => closed, sendContext, settleDialog }
 }
 
 function replaceFrame() {
     bridge?.close()
+    failure.hidden = true
     route.value = 'overview'
     generation += 1
     document.body.dataset.generation = String(generation)
@@ -256,11 +279,20 @@ for (const control of [theme, locale, route, ready]) {
     control.addEventListener('change', () => bridge?.sendContext())
 }
 requiredElement('#replace-frame').addEventListener('click', replaceFrame)
+requiredElement('#retry-frame').addEventListener('click', replaceFrame)
 requiredElement('#confirm-save').addEventListener('click', () => bridge?.settleDialog('confirmed'))
 requiredElement('#cancel-save').addEventListener('click', () => bridge?.settleDialog('cancelled'))
 dialog.addEventListener('cancel', (event) => {
     event.preventDefault()
     bridge?.settleDialog('cancelled')
 })
-window.addEventListener('pagehide', () => bridge?.close(), { once: true })
+// A page kept for Back and Forward keeps its frame and ports, so only a real unload closes them.
+window.addEventListener('pagehide', (event) => {
+    if (!event.persisted) bridge?.close()
+})
+window.addEventListener('pageshow', (event) => {
+    if (!event.persisted) return
+    if (bridge?.isClosed()) replaceFrame()
+    else bridge?.sendContext()
+})
 replaceFrame()

@@ -70,9 +70,10 @@ export function useGreetingLogic() {
     }, [])
 
     useEffect(() => {
-        document.documentElement.lang = context?.locale ?? 'en'
+        // The language of the rendered copy, not the host locale, which only formats values.
+        document.documentElement.lang = language
         document.documentElement.dataset.theme = context?.theme ?? 'light'
-    }, [context?.locale, context?.theme])
+    }, [language, context?.theme])
 
     useEffect(() => {
         const channel = bridge.current
